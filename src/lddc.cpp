@@ -28,7 +28,6 @@
 
 #include <inttypes.h>
 #include <iostream>
-#include <iomanip>
 #include <math.h>
 #include <stdint.h>
 
@@ -36,6 +35,7 @@
 
 #include "driver_node.h"
 #include "lds_lidar.h"
+//#include "lds_lvx.h"
 
 namespace livox_ros {
 
@@ -120,21 +120,19 @@ void Lddc::DistributePointCloudData(void) {
     std::cout << "lds is not registered" << std::endl;
     return;
   }
-  if (lds_->IsRequestExit()) {
-    std::cout << "DistributePointCloudData is RequestExit" << std::endl;
-    return;
-  }
   
-  lds_->pcd_semaphore_.Wait();
-  for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
-    uint32_t lidar_id = i;
-    LidarDevice *lidar = &lds_->lidars_[lidar_id];
-    LidarDataQueue *p_queue = &lidar->data;
-    if ((kConnectStateSampling != lidar->connect_state) || (p_queue == nullptr)) {
-      continue;
+  while (!lds_->IsRequestExit()) {
+    lds_->semaphore_.Wait();
+    for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
+      uint32_t lidar_id = i;
+      LidarDevice *lidar = &lds_->lidars_[lidar_id];
+      LidarDataQueue *p_queue = &lidar->data;
+      if ((kConnectStateSampling != lidar->connect_state) || (p_queue == nullptr)) {
+        continue;
+      }
+      PollingLidarPointCloudData(lidar_id, lidar);    
     }
-    PollingLidarPointCloudData(lidar_id, lidar);    
-  }
+  }  
 }
 
 void Lddc::DistributeImuData(void) {
@@ -142,20 +140,13 @@ void Lddc::DistributeImuData(void) {
     std::cout << "lds is not registered" << std::endl;
     return;
   }
-  if (lds_->IsRequestExit()) {
-    std::cout << "DistributeImuData is RequestExit" << std::endl;
-    return;
-  }
   
-  lds_->imu_semaphore_.Wait();
-  for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
-    uint32_t lidar_id = i;
-    LidarDevice *lidar = &lds_->lidars_[lidar_id];
-    LidarImuDataQueue *p_queue = &lidar->imu_data;
-    if ((kConnectStateSampling != lidar->connect_state) || (p_queue == nullptr)) {
-      continue;
+  while (!lds_->IsRequestExit()) {    
+    for (uint32_t i = 0; i < lds_->lidar_count_; i++) {
+      uint32_t lidar_id = i;
+      LidarDevice *lidar = &lds_->lidars_[lidar_id];
+      PollingLidarImuData(lidar_id, lidar);
     }
-    PollingLidarImuData(lidar_id, lidar);
   }
 }
 
@@ -263,7 +254,7 @@ void Lddc::InitPointcloud2MsgHeader(PointCloud2& cloud) {
   cloud.header.frame_id.assign(frame_id_);
   cloud.height = 1;
   cloud.width = 0;
-  cloud.fields.resize(7);
+  cloud.fields.resize(6);
   cloud.fields[0].offset = 0;
   cloud.fields[0].name = "x";
   cloud.fields[0].count = 1;
@@ -288,17 +279,13 @@ void Lddc::InitPointcloud2MsgHeader(PointCloud2& cloud) {
   cloud.fields[5].name = "line";
   cloud.fields[5].count = 1;
   cloud.fields[5].datatype = PointField::UINT8;
-  cloud.fields[6].offset = 18;
-  cloud.fields[6].name = "timestamp";
-  cloud.fields[6].count = 1;
-  cloud.fields[6].datatype = PointField::FLOAT64;
-  cloud.point_step = sizeof(LivoxPointXyzrtlt);
+  cloud.point_step = sizeof(LivoxPointXyzrtl);
 }
 
 void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint64_t& timestamp) {
   InitPointcloud2MsgHeader(cloud);
 
-  cloud.point_step = sizeof(LivoxPointXyzrtlt);
+  cloud.point_step = sizeof(LivoxPointXyzrtl);
 
   cloud.width = pkg.points_num;
   cloud.row_step = cloud.width * cloud.point_step;
@@ -307,7 +294,7 @@ void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint
   cloud.is_dense     = true;
 
   if (!pkg.points.empty()) {
-    timestamp = pkg.base_time;
+    timestamp = pkg.base_time + pkg.points[0].offset_time;
   }
 
   #ifdef BUILDING_ROS1
@@ -316,20 +303,20 @@ void Lddc::InitPointcloud2Msg(const StoragePacket& pkg, PointCloud2& cloud, uint
       cloud.header.stamp = rclcpp::Time(timestamp);
   #endif
 
-  std::vector<LivoxPointXyzrtlt> points;
+  std::vector<LivoxPointXyzrtl> points;
   for (size_t i = 0; i < pkg.points_num; ++i) {
-    LivoxPointXyzrtlt point;
+    LivoxPointXyzrtl point;
     point.x = pkg.points[i].x;
     point.y = pkg.points[i].y;
     point.z = pkg.points[i].z;
     point.reflectivity = pkg.points[i].intensity;
     point.tag = pkg.points[i].tag;
     point.line = pkg.points[i].line;
-    point.timestamp = static_cast<double>(pkg.points[i].offset_time);
+
     points.push_back(std::move(point));
   }
-  cloud.data.resize(pkg.points_num * sizeof(LivoxPointXyzrtlt));
-  memcpy(cloud.data.data(), points.data(), pkg.points_num * sizeof(LivoxPointXyzrtlt));
+  cloud.data.resize(pkg.points_num * sizeof(LivoxPointXyzrtl));
+  memcpy(cloud.data.data(), points.data(), pkg.points_num * sizeof(LivoxPointXyzrtl));
 }
 
 void Lddc::PublishPointcloud2Data(const uint8_t index, const uint64_t timestamp, const PointCloud2& cloud) {
@@ -362,7 +349,7 @@ void Lddc::InitCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg, uint8_t
 
   uint64_t timestamp = 0;
   if (!pkg.points.empty()) {
-    timestamp = pkg.base_time;
+    timestamp = pkg.base_time + pkg.points[0].offset_time;
   }
   livox_msg.timebase = timestamp;
 
@@ -392,7 +379,7 @@ void Lddc::FillPointsToCustomMsg(CustomMsg& livox_msg, const StoragePacket& pkg)
     point.reflectivity = points[i].intensity;
     point.tag = points[i].tag;
     point.line = points[i].line;
-    point.offset_time = static_cast<uint32_t>(points[i].offset_time - pkg.base_time);
+    point.offset_time = static_cast<uint32_t>(points[i].offset_time);
 
     livox_msg.points.push_back(std::move(point));
   }
@@ -423,7 +410,7 @@ void Lddc::InitPclMsg(const StoragePacket& pkg, PointCloud& cloud, uint64_t& tim
   cloud.width = pkg.points_num;
 
   if (!pkg.points.empty()) {
-    timestamp = pkg.base_time;
+    timestamp = pkg.base_time + pkg.points[0].offset_time;
   }
   cloud.header.stamp = timestamp / 1000.0;  // to pcl ros time stamp
 #elif defined BUILDING_ROS2

@@ -63,6 +63,8 @@ livox_ros_driver2
     ├── lds.h
     ├── lds_lidar.cpp
     ├── lds_lidar.h
+    ├── lds_lvx.cpp
+    ├── lds_lvx.h
     ├── livox_ros_driver2.cpp
     └── parse_cfg_file
         ├── parse_cfg_file.cpp
